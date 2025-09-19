@@ -1,0 +1,83 @@
+name: Docker Image Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository_url:
+        description: 'GitHub 仓库地址 (例如: owner/repo)'
+        required: true
+        type: string
+      ref:
+        description: '分支、标签或提交哈希 (例如: main, v1.0.0)'
+        required: true
+        default: 'main'
+        type: string
+      dockerfile_path:
+        description: 'Dockerfile 路径 (例如: ./Dockerfile)'
+        required: true
+        default: './Dockerfile'
+        type: string
+      image_name:
+        description: '最终镜像名称 (例如: my-app)'
+        required: true
+        type: string
+      image_tag:
+        description: '镜像标签 (例如: latest, v1.0.0)'
+        required: true
+        default: 'latest'
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_REGISTRY: ${{ secrets.REGISTRY || 'ghcr.io' }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - name: Checkout source repository
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.repository_url }}
+        ref: ${{ inputs.ref }}
+        path: source-code
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ inputs.image_name }}
+        tags: |
+          type=raw,value=${{ inputs.image_tag }}
+          type=raw,value=latest,enable={{is_default_branch}}
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./source-code
+        file: ./source-code/${{ inputs.dockerfile_path }}
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Output image info
+      run: |
+        echo "🎉 Docker 镜像构建成功!"
+        echo "镜像地址: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ inputs.image_name }}:${{ inputs.image_tag }}"
+        echo "拉取命令: docker pull ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ inputs.image_name }}:${{ inputs.image_tag }}"
