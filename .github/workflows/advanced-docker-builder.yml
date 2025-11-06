@@ -1,0 +1,127 @@
+name: Advanced Docker Builder with Commit Checkout
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository_url:
+        description: 'GitHub 仓库地址 (例如: owner/repo)'
+        required: true
+        type: string
+      commit_hash:
+        description: '具体的 commit 哈希值 (例如: 3b98ed31e22cd2893563d4b375c2538c72a2e224)'
+        required: true
+        type: string
+      docker_build_command:
+        description: 'Docker 构建命令 (例如: docker build -t my-app .)'
+        required: true
+        type: string
+      image_name:
+        description: '最终镜像名称 (例如: my-app)'
+        required: true
+        type: string
+      image_tag:
+        description: '镜像标签 (例如: latest, v1.0.0)'
+        required: true
+        default: 'latest'
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_REGISTRY: ${{ secrets.REGISTRY || 'ghcr.io' }}
+
+jobs:
+  build-and-package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      actions: write  # 需要此权限来上传 artifacts
+
+    steps:
+    - name: Checkout this repository first
+      uses: actions/checkout@v4
+      with:
+        path: builder-repo
+
+    - name: Clone target repository
+      run: |
+        echo "正在克隆仓库: ${{ inputs.repository_url }}"
+        gh repo clone ${{ inputs.repository_url }} target-repo
+
+    - name: Navigate to repository and checkout specific commit
+      run: |
+        cd target-repo
+        echo "当前工作目录: $(pwd)"
+        echo "检出到的 commit: ${{ inputs.commit_hash }}"
+        git checkout ${{ inputs.commit_hash }}
+        echo "当前 commit 信息:"
+        git log -1 --oneline
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Execute custom Docker build command
+      run: |
+        cd target-repo
+        echo "执行 Docker 构建命令: ${{ inputs.docker_build_command }}"
+
+        # 替换用户输入的镜像名称为完整的 GHCR 路径
+        FULL_IMAGE_NAME="${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ inputs.image_name }}:${{ inputs.image_tag }}"
+        BUILD_COMMAND=$(echo "${{ inputs.docker_build_command }}" | sed "s|${{ inputs.image_name }}|${FULL_IMAGE_NAME}|g")
+
+        echo "修改后的构建命令: $BUILD_COMMAND"
+        eval $BUILD_COMMAND
+
+        # 验证镜像是否构建成功
+        echo "验证本地镜像:"
+        docker images | grep "${{ inputs.image_name }}"
+
+    - name: Push Docker image to GHCR
+      run: |
+        FULL_IMAGE_NAME="${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ inputs.image_name }}:${{ inputs.image_tag }}"
+        echo "推送镜像到 GHCR: $FULL_IMAGE_NAME"
+        docker push $FULL_IMAGE_NAME
+
+    - name: Save Docker image as .tar file
+      run: |
+        FULL_IMAGE_NAME="${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ inputs.image_name }}:${{ inputs.image_tag }}"
+        TAR_FILE_NAME="${{ inputs.image_name }}-${{ inputs.image_tag }}.tar"
+
+        echo "保存镜像为 .tar 文件: $TAR_FILE_NAME"
+        docker save -o $TAR_FILE_NAME $FULL_IMAGE_NAME
+
+        # 显示文件信息
+        echo "文件大小:"
+        ls -lh $TAR_FILE_NAME
+
+    - name: Upload Docker image .tar file as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.image_name }}-${{ inputs.image_tag }}-docker-image
+        path: ${{ inputs.image_name }}-${{ inputs.image_tag }}.tar
+        retention-days: 30  # 保留30天
+
+    - name: Output final information
+      run: |
+        FULL_IMAGE_NAME="${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ inputs.image_name }}:${{ inputs.image_tag }}"
+        TAR_FILE_NAME="${{ inputs.image_name }}-${{ inputs.image_tag }}.tar"
+
+        echo "🎉 Docker 镜像构建和打包完成!"
+        echo ""
+        echo "📦 镜像信息:"
+        echo "  镜像地址: $FULL_IMAGE_NAME"
+        echo "  拉取命令: docker pull $FULL_IMAGE_NAME"
+        echo ""
+        echo "💾 文件信息:"
+        echo "  .tar 文件: $TAR_FILE_NAME"
+        echo "  下载位置: GitHub Actions 页面的 Artifacts 部分"
+        echo ""
+        echo "📋 加载 .tar 文件的命令:"
+        echo "  docker load -i $TAR_FILE_NAME"
